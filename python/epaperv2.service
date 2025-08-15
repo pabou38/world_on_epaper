@@ -1,0 +1,63 @@
+# cp to /lib/systemd/system
+#Created symlink /etc/systemd/system/multi-user.target.wants/solar2heater.service → /lib/systemd/system/solar2heater.service.
+
+#StandardError=
+#Controls where file descriptor 1 (STDOUT) of the executed processes is connected to.
+# one of inherit, null, tty, journal, syslog, kmsg, journal+console, syslog+console, kmsg+console or socket.
+
+#KillMode=¶
+#Specifies how processes of this unit shall be killed. One of control-group, mixed, process, none.
+#it is not recommended to set KillMode= to process or even none,
+#Defaults to control-group
+
+
+# journalctl -u meter2inverter
+# journalctl -u solar2heater
+# systemctl daemon-reload
+
+# "delete" syslog
+# sudo truncate -s 0 /var/log/syslog
+
+# huge journal
+# journalctl --disk-usage
+# ls -l /var/log/journal
+# sudo journalctl --vacuum-size=200M
+# sudo journalctl --vacuum-time=2d
+
+# sudo systemctl is-active meter2inverter
+
+
+
+[Unit]
+Description=solar2heater: scrap newspaper cover for display on epaper
+After=network.target
+
+[Service]
+Type=simple
+#ExecStartPre=
+ExecStart=/home/pi/APP/epaperv2/get_cover.py 
+ExecStop=kill -9 `pgrep get_cover`
+
+WorkingDirectory=/home/pi/APP/epaperv2
+
+StandardOutput=null
+
+#Standard output type syslog is obsolete, automatically updating to journal. Please update your unit file, and consider removing the setting altogether.
+#StandardError=syslog
+StandardError=journal
+SyslogIdentifier=epaperv2
+
+# need systemctl --version > 240
+StandardError=append:/home/pi/ramdisk/epaperv2_systemd_stderr.log
+
+KillMode=control-group
+Restart=on-failure
+RestartSec=45s
+
+#User=pi
+#Group=pi
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
