@@ -1,4 +1,3 @@
-
 import os, sys, io
 import M5
 from M5 import *
@@ -9,11 +8,25 @@ from hardware import Timer
 import time
 import random
 
+# https://uiflow-micropython.readthedocs.io/en/2.2.0/hardware/display.html
+# A lcd display library
+from M5 import Display
+
+from M5 import Widgets
+# A basic UI library
+# https://uiflow-micropython.readthedocs.io/en/2.2.0/widgets/index.html
+
+# M5.Lcd, Widgets and Display have a rotation method !!!
+
+# use Widgets for setRotation, setBrightnes, fillScreen
+# use Display for fonts, cursor, print, width, drawJpg
+# DO NOT use M5.Lcd
+
 # https://www.youtube.com/watch?v=BP0E_Otfciw
 
-#############################
-# do not leave custom edit
-#############################
+#########################################
+# do not leave custom edit in UIFlow GUI
+#########################################
 
 version = 1.1 # july 2025
 version = 1.2 # Aug 2025
@@ -21,6 +34,20 @@ version = 1.21 # 11 08 2025
 version = 1.22 # 12/08/2025
 version = 1.23 # 13/08/2025
 version = 1.24 # 14/08/2025
+version = 1.25 # 16/08/2025 crash with rot = 3
+version = 1.25 # 17/08/2025 replace M5.Lcd by Display/Widgets
+
+################
+# TO DO
+# newyorker and china daily can provide multiple picture
+################
+
+
+print("version: %0.2f" %version)
+
+# UIFlow 2.0 V2.3.3
+print("python: ", sys.version_info)
+print("micropython: ", sys.implementation)
 
 """
 +------------------------+
@@ -93,24 +120,20 @@ cover_list = ["libe", "nyt", "newyorker", "china_daily"]
 
 default_cover = "newyorker" # if cannot be determined based on orientation
 
-# index to step thru existing files in SD
-index_libe = 0
-index_nyt = 0
-index_newyorker = 0
-index_china_daily = 0
 
 # global. index of next file to display 0, 1, 
-cover_index = [index_libe, index_nyt, index_newyorker, index_china_daily]
+# index to step thru existing files in SD
+# same order as cover_list
+cover_index = [0,0,0,0]
 
-epaper_w = M5.Lcd.width()
-epaper_h = M5.Lcd.height()
+epaper_w = Display.width()
+epaper_h = Display.height()
 print("w: %d, h: %d"%(epaper_w, epaper_h))
 
-
-status_line = 10 # X,Y touch, footer, battery. rather on top, as botton depend on position ?
+status_line = 0 # X for power down message
 
 # top line, scapping status message
-top_line = (10,50) # 
+top_line = (10,100) # 
 _2nd_top_line = (top_line[0], top_line[1] + 30) 
 
 # param to timer callback (via global var), typically some cause
@@ -118,11 +141,11 @@ poweroff_mesg = None # set before setting timer
 
 # poweroff for x sec, then wakeup and reboot
 # the longer, the less frequent update and the less battery
-poweroff_sleep_sec = 60*60  
+poweroff_sleep_sec = 60*60 * 4
 
-# will reboot after x sec 
+# will reboot after x sec of inactivity
 timer_unattended = 30
-timer_interactive = 300
+timer_interactive = 30
 
 
 #############
@@ -138,31 +161,30 @@ timer_interactive = 300
 # on stand portrait , attach on bottom (0.9343262, -0.008789063, -0.3937988)
 
 def what_orientation():
-
-  # g if from -1 to +1
+  # g is from -1 to +1
   limit = 0.75
 
   (x,y,z) = Imu.getAccel()
 
   if y > 0 and abs(y) > limit:
     # landscape handle on rigth
-    print("nyt: landscape, handle on rigth")
+    print("orientation nyt: landscape, handle on rigth")
     return("nyt")
 
   if y < 0 and abs(y) > limit:
     # -1 (vertical) to -0.7 
     # on stand landscape , attach on left
-    print("china_daily: landscape, handle on left")
+    print("orientation china_daily: landscape, handle on left")
     return("china_daily")
 
   if x > 0 and abs(x) > limit:
     # on stand, portrait attach on bottom
-    print("newyorker: portrait, handle on bottom")
+    print("orientation newyorker: portrait, handle on bottom")
     return("newyorker")
 
   if x < 0 and abs(x) > limit:
     # on stand portrait , attach on top
-    print("libe: portrait, handle on top")
+    print("orientation libe: portrait, handle on top")
     return("libe")
 
   return(None)
@@ -206,12 +228,18 @@ def callback_poweroff(t):
 
   global poweroff_mesg # set when arming timer
   global poweroff_sleep_sec
-  print(t)
+  #print(t)
 
-  print("timer callback. %s. will timesleep for %d sec" %(poweroff_mesg, poweroff_sleep_sec))
+  # seems print does not work in callback ?
+  print("timer callback. cause %s. will timesleep for %d sec" %(poweroff_mesg, poweroff_sleep_sec))
   # timer callback. timer interactive. will timesleep for 3600 sec
   
-  time.sleep(5)
+  time.sleep(2)
+
+  print("about to call poweroff")
+
+  time.sleep(2)
+
   power_down(cause=poweroff_mesg, sec = poweroff_sleep_sec)
 
 
@@ -237,10 +265,19 @@ turn off and wakeup at weekday, day, hour mn Power.timerSleep(1, 1, 1, 1)
 
 def power_down(cause=None, sec = 60*60):
 
+  # print does not work here , because callback from timer ?
+
   global rtc
   global footer, battery
 
-  print("power down. cause:%s, sec: %d" %(cause, sec))
+  global current_cover
+
+  global interactive # set to true whenwe interacted
+
+  s = "powerdown. cause:%s, sec: %d. current cover (being displayed) %s" %(cause, sec, current_cover)
+  print(s)
+  my_log(s)
+
 
   for _ in range(5):
     tone(2000,100)
@@ -251,41 +288,63 @@ def power_down(cause=None, sec = 60*60):
   # write some status text before powering down
   ################
 
-  # # rotate display before writing text: 2 options:
+  # rotate display before writing text ? 
 
-  # 1 - based on CURRENT (physical)) orientation. 
+  # 1 - based on CURRENT (physical) orientation. 
   # 2 - based on CURRENTLY displayed pic, which can be different from the screen orientation if we play in interactive mode
   #   (ie display in landscape, and we just touched upper rigth, which is upper left in the default orientation, which will display libe in portrait
 
-  # use 1-
-  # footer will on top of display, whatever the orientation
-  # top "middle" in portrait, top rather left on landscape
-  cover = what_orientation()
-  print("power down. orientation:%s" %cover)
+  # interactive mode, only 2 orientation (2 and landscape aka 1) 
+  # current_cover is a global with picture being last displayed
 
-  if cover is None:
-    cover = default_cover
+  # unattended mode. already rotated
 
-  rotate_on_orientation(cover)
 
-  log_msg = "power down. cause: %s. sec: %d. rotation: %s" %(cause, sec, cover)
-  print(log_msg)
-  my_log(log_msg)
+  if cause == "double touch":
+    print("powerdown. double touch. rotated as in interactive mode")
 
-  # update widget before poweroff
+    # rotate as if in interactive mode, as double touch is interactive
+    if current_cover in ["libe", "newyorker"]:
+      Widgets.setRotation(default_rotation)
+    else:
+      Widgets.setRotation(1)
 
-  # update battery widget
-  # already included in footer
+  else:
+    # timer
+    if interactive: 
+      # timout after interactive mode 
+      print("powerdown. timer. interactive mode. rotated as in interactive mode")
+
+      if current_cover in ["libe", "newyorker"]:
+        Widgets.setRotation(default_rotation)
+      else:
+        Widgets.setRotation(1)
+    else:
+      print("powerdown. timer. boot mode. already rotated")
+      pass
+      # display already rotated
+
+
+
+
+  # create time stamp to write on display before poweroff
+  ret = rtc.local_datetime()
+  time_stamp = "%d-%d/%d:%d" %(ret[2], ret[1],ret[4]+2, ret[5]) # written when power down
+  print("time stamp:", time_stamp)
+
+  # update battery before poweroff
+  Display.setCursor(0,0)
+  Display.setFont(Widgets.FONTS.DejaVu18)
+  Display.printf('Bat: %d%%' %Power.getBatteryLevel() )
+
   #battery_p = Power.getBatteryLevel()
   #battery.setText(str(battery_p))
 
-  # update footer widget
-  #footer.setText("meaudre robotics")
-
-  mn = int(sec /60)
-
-  display_msg = "power down for %dmn. bat:%d%%"  %(mn, battery_p )
-  footer.setText(display_msg)
+  # update footer widget  before poweroff
+  # msg contains time stamp. 
+  # battery % already displayed on corner
+  display_msg = "%s power down for %dmn"  %(time_stamp, int(sec /60))
+  footer.setText(display_msg) # on top of existing pic
 
   # does updating footer erase batery ?????
 
@@ -298,9 +357,9 @@ def power_down(cause=None, sec = 60*60):
   M5.Lcd.printf('press button to restart')
   """
 
-  time.sleep(2) # give some time to display
+  time.sleep(5) # give some time to display
 
-  print("going to timer sleep for %s sec" %sec)
+  print("calling Power.timerSleep for %s sec" %sec)
   
   Power.timerSleep(sec)
 
@@ -409,8 +468,8 @@ def play_intro():
 # print error on console and epaper
 ###############
 def print_error(s):
-  M5.Lcd.setCursor(0, 40)
-  M5.Lcd.printf(s)
+  Display.setCursor(0, 40)
+  Display.printf(s)
   print(s)
 
 ##################
@@ -668,12 +727,12 @@ def get_covers(c=None):
 
     tone(2500,100) # start scrap
 
+    # write to startup screen
     M5.Lcd.setCursor(_2nd_top_line[0], _2nd_top_line[1])
     # make sure we overwrite previous, whatever the size
-    c = "%s        " %cover
+    c = "==> %s        " %cover
     c = c[:20]
-    
-    M5.Lcd.printf(c)
+    Display.printf(c)
 
     # PI4 will scrap, store on webserver, and return url
     try:
@@ -686,7 +745,7 @@ def get_covers(c=None):
 
     if url != 0: 
 
-      tone(1500,150)  # start OK
+      tone(1500,150)  # scrap OK
 
       # save to SD. filename is <cover>_L.jpg
       jpeg_name =  "%s_L" %cover 
@@ -786,7 +845,8 @@ def step_thru_cover(cover):
 ####################
 
 # get a cover at random
-# retreive type of cover (needed for orientation)
+# retrieve type of cover (needed for orientation)
+# returns file name and cover type
 
 def random_cover():
   nb = len(list(os.listdir("/sd/cover"))) # nb of covers stored in SD
@@ -800,38 +860,48 @@ def random_cover():
 
     if file_name.find(c) != -1:
 
-      print("%d files in SD, random %d, %s. cover: %s" %(nb, x, file_name, cover_list[i]))
+      print("getting random cover: %d files in SD, random %d, %s. cover: %s" %(nb, x, file_name, cover_list[i]))
       return(file_name, cover_list[i] )
 
   return(None)
-
 
 
 #########################
 # rotate display
 #########################
 # used in show cover()
-# used in power down to write text
+# text is used to workaround the bug of rotate 3 crashing the S3 for drawjpg
+# so only used for china_daily, if text == True, rot(3) else rot(5)
 
-def rotate_on_orientation(cover):
+def rotate_on_orientation(cover, text=False):
 
   assert cover in cover_list
     
   if cover in ["nyt"]:
     rot = 1
-
+  
   if cover in ["china_daily"]:
-    rot = 3
-   
+    # WTF, rot 3 crashed S3. rot 0,1,2 are ok, incl with china_daily_L.jpg
+    # rot 5 ok but pic mirrored
+    # rot 4, 6 works as well but croppêd and mirrored
+    # ret 7 crashed again
+    if text:
+      rot = 3  # rot 3 OK for print
+    else:
+      rot = 5 # vague workaround. will still show a mirrored pic
+
   if cover in ["newyorker"]:
     rot = 0
   
   if cover in ["libe"]:
     rot = default_rotation
 
-  print("rotate. cover: %s, int: %d" %(cover, rot))
-
-  M5.Lcd.setRotation(rot)
+  try:
+    #M5.Lcd.setRotation(rot) 
+    Widgets.setRotation(rot)
+    print("set rotation based on cover: %s, rot: %d" %(cover, rot))
+  except Exception as e:
+    print("cannot set rotation %s, %s" %(cover, str(e)))
 
   return(rot)
 
@@ -845,6 +915,8 @@ def rotate_on_orientation(cover):
 # Display.drawImage
 # Display.drawBmp
 
+# set global current_cover
+
 # we need to rotate the display to show pic
 
 # option 1:
@@ -852,59 +924,108 @@ def rotate_on_orientation(cover):
 # so that corner are "physical", ie the same physical corner always correspond to the same cover
 
 # option 2: 
-# do not rotate back and manage changing corner semantic
+# do not rotate back and manage changing corner semantic (or done by virtue of rotationg)
 
-# OPTION 1
+###### use option 1
+###### also different rotation for interactive or boot
+
 # unattended = True: display in "non interactive mode", 4 covers = 4 rotation
-# unattended = True: display in "non interactive mode". only 2 rotation for ease of use
+# unattended = True: display in "interactive mode". only 2 rotation for ease of use
 
 
 def show_cover(cover, file_name, unattended = True):
 
+  global current_cover # last cover being displayed
+
   assert cover in cover_list
 
-  # bip done when zone pushed. vibration not available ?
+  # unattended, ie done a boot time
+  print("show cover: cover:%s, %s. unattended: %s" %(cover, file_name, unattended))
 
+  """
   # https://uiflow-micropython.readthedocs.io/en/latest/hardware/display.html
   # 1: 0° rotation 2: 90° rotation 3: 180° rotation 4: 270° rotation
 
-  # seems Display. is the same as M5.Lcd.
+  my experiment:
+  top left corner 0,0 
+    portait, handle botton:     rot 0
+    landscape, handle rigth:    rot 1
+    portrait, handle top:       rot 2
+    landscape, handle left:     rot 3
+
+  https://uiflow-micropython.readthedocs.io/en/2.2.0/widgets/index.html
+  Widgets.setRotation(rotation: int)
+  0: Portrait (0°C)
+  1: Landscape (90°C)
+  2: Inverse Portrait (180°C)
+  3: Inverse Landscape (270°C)
+
+  WTFFFFFF. looks like Display and Widgets are not the same for rotation. Widgets is compatible with what I experienced
+  WTFFFFFFF. crash with Widgets.rot(3)
+
+  """
 
   #####################
   # interactive mode: all landscape, all portrait are same rotation
   #####################
   if not unattended:
 
+    print("interactive mode. only two rotation")
+
     if cover in ["nyt", "china_daily"]:  # all the same
       # default position in landscape is attach on rigth
-      M5.Lcd.setRotation(1)
-      
+      Widgets.setRotation(1)      
     else:
-      pass
+      Widgets.setRotation(default_rotation)
       # default position in portrait is attach on top
-
-    M5.Lcd.drawJpg(file_name, 0, 0, 0, 0, 0, 0, 1, 1)
 
   #####################
   # unattended (boot) mode: 
   #####################
 
+  ###### wTF ##########
+  # disconnect here with rot = 3 ok with all other rot ???? rot 5 shows a mirrored pic
+
   else:
+    rot = rotate_on_orientation(cover, text = False)  
+    # text is false for pic, false means do NOT use rot 3, use 5 (lousy workaround waiting for the bug to be fixed)
+    print("boot. rotated to: %d" %rot)
+    
 
-    rot = rotate_on_orientation(cover)
-    print("rotated %d to display in unattended mode" %rot)
+  ##############
+  # show pic
+  ##############
 
-    M5.Lcd.drawJpg(file_name, 0, 0, 0, 0, 0, 0, 1, 1)
+  print("draw jpeg file. unattended: %s" %unattended)
+  ######### use Display. vs M5.Lcd.
+  Display.drawJpg(file_name, 0, 0, 0, 0, 0, 0, 1, 1)
 
+  # used in powerdown to write msg (date, sleeping time)
+  # because in interactive mode, the pic being displayed is not based on accelerometer, but on user interaction
+  current_cover = cover
+
+  
+  # write battery % on top left corner
+  # used as a "feedback" that we got a touch
+  # also remain as indicator when paperS3 power down
+  # do it while the display is rotated, so that it will appear on top left of image
+
+
+  print("update bat on top left")
+  Display.setCursor(0,0)
+  Display.setFont(Widgets.FONTS.DejaVu18)
+  Display.printf('Bat: %d%%' %Power.getBatteryLevel() )
+  
   ###### OPTION 1: IMPORTANT: set rotation to default , to keep the corner the same
-  M5.Lcd.setRotation(default_rotation)
-
+  print("reset to default rotation")
+  Widgets.setRotation(default_rotation)
 
 
 #####################
 # log to file
 #####################
 # rtc is created in setup(), but defining it as global here does not make ir known
+#  call what_orientation()
 
 def my_log(msg):
 
@@ -914,13 +1035,10 @@ def my_log(msg):
 
   try:
     with open("/sd/epaper.log", "a") as f:
-
       s = "%s: %s\n" %(h, msg)
       f.write(s)
-
   except Exception as e:
     print("cannot write to log", str(e), msg, h)
-
 
 
 
@@ -936,18 +1054,22 @@ def setup():
 
   global rtc
 
-  global i
+  global interactive
 
-  i = 0
+  interactive = False # set to true whe we interact
 
   M5.begin()
+
 
   ##################
   # RTC
   ##################
   rtc = RTC()
-  print(rtc.local_datetime())
-  print(rtc.timezone())
+  ret = rtc.local_datetime()
+  print(ret)
+  # (2025, 8, 15, 5, 6, 55, 6, 251388)
+  # 15 aug, friday, 8h 55
+  print(rtc.timezone()) # GMT0
 
   ################
   # SD card
@@ -959,6 +1081,7 @@ def setup():
   #############
   # log time stamp to file
   #############
+  # call what_orientation()
 
   my_log("starting")
 
@@ -975,8 +1098,6 @@ def setup():
   for _ in range(5):
     tone(2500,100)
     time.sleep(0.2)
-
-
 
   #######################
   # default orientation: choose:
@@ -1000,29 +1121,79 @@ def setup():
   Widgets.fillScreen(0x000000) # black background
 
   # Set the rotation Angle of the display.
-  M5.Lcd.setRotation(default_rotation) # typically 2
+  #M5.Lcd.setRotation(default_rotation) # typically 2
+
+  #####################
+  # rotate screen based on orientation, to display startup message
+  #####################
+  # will do no futher rotate for boot mode (see bug for rotate = 3)
+  cover = what_orientation()
+
+  if cover is None:
+     cover = default_cover
+
+ 
+  
+  ##################
+  # testing rotation
+  ##################
+
+  """
+  print("0")
+  Widgets.setRotation(0)
+  Display.drawJpg("/sd/cover/libe_L.jpg", 0, 0, 0, 0, 0, 0, 1, 1)
+  time.sleep(5)
+
+  print("1")
+  Widgets.setRotation(1)
+  Display.drawJpg("/sd/cover/nyt_L.jpg", 0, 0, 0, 0, 0, 0, 1, 1)
+  time.sleep(5)
+
+  print("2")
+  Widgets.setRotation(2)
+  Display.drawJpg("/sd/cover/newyorker_L.jpg", 0, 0, 0, 0, 0, 0, 1, 1)
+  time.sleep(5)
+  
+
+  for i in range(4):
+    x = 4 + i
+    print(x)
+    Widgets.setRotation(x)
+    Display.drawJpg("/sd/cover/china_daily_L.jpg", 0, 0, 0, 0, 0, 0, 1, 1)
+    time.sleep(5)
+
+
+  sys.exit(1)
+
+  """
+
+
+  print("rotate display to show startup message. cover:%s" %cover)
+  rotate_on_orientation(cover, text=True)
+  # text = True means can use rot = 3 (crashed drawjpg but seems ok for printf)
+  # only used for china daily
 
 
   ##### widget Title
   # BIG title on top, only visible when booting. overwritten by jpeg
   # visible only until the unattended pic is displayed
+  # use printf rather, this interact with footer
   """
   title0 = Widgets.Title("news cover on epaper", 16, 0xffffff, 0x000000, Widgets.FONTS.DejaVu24)
   title0.setVisible(True)
   """
 
-  """
   ##### widget label
   col1 = 0xcccccc
   col2 = 0x222222
-  battery = Widgets.Label("bat", 480, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu12)
+  #battery = Widgets.Label("bat", 480, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu12)
 
   # display touch X,Y (bottom)
   touch_X = Widgets.Label("X", 5, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu12)
   touch_Y = Widgets.Label("Y", 45, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu12)
 
   # footer
-  footer = Widgets.Label("footer", 180, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu18)
+  footer = Widgets.Label("footer", 100, status_line, 1.0, col1, col2, Widgets.FONTS.DejaVu18)
  
 
   # M5.Lcd seems the same as Display.
@@ -1034,6 +1205,7 @@ def setup():
   # https://uiflow-micropython.readthedocs.io/en/latest/widgets/image.html
   # image0 = Widgets.Image("res/img/SCR-20240902-itcy.png", 71, 64)
   
+
   """
   K5.Lcd.FONTS.ASCII7  very small
   K5.Lcd.FONTS.DejaVu9
@@ -1048,18 +1220,16 @@ def setup():
   K5.Lcd.FONTS.EFontKR24
   """
 
-
   #M5.Lcd.setTextColor(0xffffff, 0x000000) # white letter on black background
-  M5.Lcd.setTextColor(0xeeeeee, 0x333333) # white letter on black background
+  Display.setTextColor(0xeeeeee, 0x333333) # white letter on black background
 
+  # big text, will disappear when pic is displayed
+  Display.setFont(Widgets.FONTS.DejaVu56) # font for M5.Lcd.printf
+  Display.setCursor(3, 3)
+  Display.printf("Meaudre Robotics")
 
-  # big text, will disapear when pic is displayed
-  M5.Lcd.setFont(Widgets.FONTS.DejaVu24) # font for M5.Lcd.printf
-  M5.Lcd.setCursor(3, 3)
-  M5.Lcd.printf("Meaudre Robotics")
+  Display.setFont(Widgets.FONTS.DejaVu24) # for next print (scrap status)
 
-  M5.Lcd.setFont(Widgets.FONTS.DejaVu18) # for next print
-  """
   
   try:
     os.mkdir('/sd/cover')
@@ -1072,19 +1242,21 @@ def setup():
   #################
   timer0 = Timer(0)
 
+
   ##############
   # check if web server online and update covers
   ##############
-
   ret = scrap("status")
+
   M5.Lcd.setCursor(top_line[0], top_line[1])
+
   if ret != 0:
 
     ##############
     # get covers and roll
     ##############
     print("web server in online. getting updated covers", ret)
-    M5.Lcd.printf('getting new covers')
+    Display.printf('getting new covers')
 
     print("GETTING ALL COVERS")
     # write 2nd_top_line with name of cover being processed
@@ -1094,13 +1266,14 @@ def setup():
     roll_cover()
     
   else:
+
      print("web server offline. cannot get update", ret)
-     M5.Lcd.printf('web server offline')
+     Display.printf('web server offline')
+
      my_log('web server offline')
 
   # touch is -1,-1 at boot
 
-   
   ##################
   # get orientation
   ##################
@@ -1115,23 +1288,39 @@ def setup():
     cover = default_cover
 
   ##################
-  # show cover at booth
+  # show cover at boot
   ##################
+
+  ##### BUG rotation 3 seems to crash the paperS3 (disconnect, reboot)
+  # interactive mode does not use 3, only 1
+
 
   # last downloaded 
   file_name =  "/sd/cover/%s_L.jpg" %cover
-  print("unattended mode. showing:", file_name)
+  print("Boot. showing cover (based on orientation):", file_name)
 
-  # cover used to figure out if rotation is needed
-  # unattended: 4 covers = 4 rotation
-  show_cover(cover, file_name, unattended=True)
+  # cover used to figure out which rotation is needed
+  # unattended: 4 covers = 4 rotation. NOTE: display ALREADY ROTATED
 
-  M5.Lcd.setCursor(0,0)
-  M5.Lcd.printf('Bat: %d' %Power.getBatteryLevel() )
+  try:
+    show_cover(cover, file_name, unattended=True)  
+    # show_cover() updated current_cover global
+    # show cover does rotation
+    print("current cover %s" %current_cover)
+
+  except Exception as e:
+    print("Exception %s cannot show cover at boot %s" %(str(e), file_name))
+
+
+  #####################
+  # rotate screen to default
+  #####################
+  # this rotation defines the "semantic" of corners, ie top left = Libe
+  Widgets.setRotation(default_rotation) # typically 2
 
 
   ####################
-  # power down if no interaction (unattended mode)
+  # set up powerdown timer if no interaction (unattended mode)
   ####################
 
   poweroff_mesg  = "timer unattended"  # global
@@ -1149,7 +1338,7 @@ def setup():
 ############################################################################################
 
 # if new touch on corner, show corresponding cover
-# if battery changed, update widget
+# 
 # if shackened, show a random cover
 # if double touch, powerdown
 # if no interaction for a while, powerdown
@@ -1163,22 +1352,21 @@ def loop():
 
   global poweroff_mesg
 
-  global last_cover
+  global current_cover
+
 
   M5.update()
+
   
   ####################
   # read touch
   ####################
   touchX, touchY, count = read_touch()
 
+
   # return value of last touch, ie does not change between touch
   # count not 0 if touch ? # number of simultaneous touch? 0 if no touch
   
-  ########################
-  # update widgets
-  ########################
-  if count != 0:
 
   #####################
   # single touch, update cover
@@ -1198,6 +1386,8 @@ def loop():
     if touchX != prev_touchX or touchY != prev_touchY:
 
       tone (1000,100)
+
+      interactive = True # set to true when we interact
 
       prev_touchX = touchX
       prev_touchY = touchY
@@ -1221,9 +1411,9 @@ def loop():
         # display need to know which cover for rotation
         # rotate display to show, but put back to default, so that corner are always the same
         show_cover(cover, file_name, unattended=False)
+        # show_cover() updated current_cover global
 
         # update ALL labels AFTER displaying pic
-        # will be overwritten by printf
         """
         print("update widget touch X,Y")
         touch_X.setText(str(touchX))
@@ -1231,7 +1421,6 @@ def loop():
         """
 
         # WTF. looks like those widgets are not updated systemetaically. so use print instead
-
         """
         print("update widget battery")
         battery_p = Power.getBatteryLevel()
@@ -1241,8 +1430,11 @@ def loop():
         footer.setText("meaudre robotics")
         """
 
-        M5.Lcd.setCursor(0,0)
-        M5.Lcd.printf('Bat: %d' %Power.getBatteryLevel() )
+        # FINALLY, write battery status when showing PIC, to use the same rotation as pic
+        # show_cover() reset rotation to default after displaying pic (ie corner have a physical meaning)
+
+        # used in powerdown to write msg (date, sleeping time)
+        # because in interactive mode, the pic being displayed is not based on accelerometer, but on user interaction
 
       else:
         pass # cover is None
@@ -1284,19 +1476,20 @@ def loop():
       (file_name, cover) = ret
       print("shackened, showing:%s" %file_name)
       file_name = "/sd/cover/" + file_name
-      show_cover(cover, file_name)
+      show_cover(cover, file_name, unattended = False)
     else:
       print("cannot get random cover")
 
   else:
     pass
 
+
   # WTF. do I need debounce ?
   #time.sleep(0.2)
   
 
 ##################
-# do not touch, I mean you can touch the screen, not the code below
+# do not touch, I mean you can touch the screen, but not the code below
 ##################
 if __name__ == '__main__':
   try:
@@ -1309,5 +1502,3 @@ if __name__ == '__main__':
       print_error_msg(e)
     except ImportError:
       print("please update to latest firmware")
-
-
