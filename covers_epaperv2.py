@@ -11,10 +11,18 @@ import random
 # https://uiflow-micropython.readthedocs.io/en/2.2.0/hardware/display.html
 # A lcd display library
 from M5 import Display
+# Display.drawPng
+# Display.drawJpg
+# Display.drawBmp
+# Display.drawImage
+# Display.drawRawBuf
+# Display.printf
 
-from M5 import Widgets
-# A basic UI library
 # https://uiflow-micropython.readthedocs.io/en/2.2.0/widgets/index.html
+# A basic UI library
+# Widget has an image class. Widgets.Image(str: file, x: int, y: int, parent)  
+# Widget has an ImagePlus class to display remote images, with periodoc update
+from M5 import Widgets
 
 # M5.Lcd, Widgets and Display have a rotation method !!!
 
@@ -25,7 +33,7 @@ from M5 import Widgets
 # https://www.youtube.com/watch?v=BP0E_Otfciw
 
 #########################################
-# do not leave custom edit in UIFlow GUI
+# do not leave custom edit in UIFlow GUI. Do not swith to blockly
 #########################################
 
 version = 1.1 # july 2025
@@ -35,11 +43,12 @@ version = 1.22 # 12/08/2025
 version = 1.23 # 13/08/2025
 version = 1.24 # 14/08/2025
 version = 1.25 # 16/08/2025 crash with rot = 3
-version = 1.25 # 17/08/2025 replace M5.Lcd by Display/Widgets
+version = 1.26 # 17/08/2025 replace M5.Lcd by Display/Widgets
+version = 1.27 # 20/08/2025 found workaround for rot 3 crash
 
 ################
 # TO DO
-# newyorker and china daily can provide multiple picture
+# newyorker and china daily can provide multiple picture in one go, to be leveraged
 ################
 
 
@@ -310,7 +319,8 @@ def power_down(cause=None, sec = 60*60):
       Widgets.setRotation(1)
 
   else:
-    # timer
+    # timer caused power down
+    # seems print does not work in timer callback
     if interactive: 
       # timout after interactive mode 
       print("powerdown. timer. interactive mode. rotated as in interactive mode")
@@ -319,12 +329,12 @@ def power_down(cause=None, sec = 60*60):
         Widgets.setRotation(default_rotation)
       else:
         Widgets.setRotation(1)
+
     else:
-      print("powerdown. timer. boot mode. already rotated")
-      pass
-      # display already rotated
-
-
+      # boot and no activity for 30sec
+      print("powerdown. timer. boot mode")
+      # display was rotated to default, need to rotated according to current cover (or physical orientation, which should be the same)
+      rotate_on_orientation(current_cover, text=True)
 
 
   # create time stamp to write on display before poweroff
@@ -333,20 +343,16 @@ def power_down(cause=None, sec = 60*60):
   print("time stamp:", time_stamp)
 
   # update battery before poweroff
+  # with display rotated, will write on top left
   Display.setCursor(0,0)
   Display.setFont(Widgets.FONTS.DejaVu18)
   Display.printf('Bat: %d%%' %Power.getBatteryLevel() )
 
-  #battery_p = Power.getBatteryLevel()
-  #battery.setText(str(battery_p))
-
-  # update footer widget  before poweroff
+  # update footer widget before poweroff
   # msg contains time stamp. 
   # battery % already displayed on corner
-  display_msg = "%s power down for %dmn"  %(time_stamp, int(sec /60))
+  display_msg = "%s power down for %dmn. Press button to restart immediatly"  %(time_stamp, int(sec /60))
   footer.setText(display_msg) # on top of existing pic
-
-  # does updating footer erase batery ?????
 
   """
   # too intrusive when looking at the display in power off
@@ -357,7 +363,7 @@ def power_down(cause=None, sec = 60*60):
   M5.Lcd.printf('press button to restart')
   """
 
-  time.sleep(5) # give some time to display
+  time.sleep(2) # give some time to display (anyway, seems print does not work when called from timer callback)
 
   print("calling Power.timerSleep for %s sec" %sec)
   
@@ -596,7 +602,7 @@ def roll_cover(cover=None):
 
 # call endpoint on PI
 # PI does scrapping, return url of file (jpg, ..) as stored on PI's web server
-# return url or 0
+# return url of jpeg file on web server or 0
 
 ### "special" endpoint/cover "status", to check if web server is online
 
@@ -623,6 +629,8 @@ def scrap(cover):
   if (http_req.status_code) == 200:
     ok = (http_req.json())['ok']
     if ok:
+
+      # GET L (grayscale)
       url = (http_req.json())['L']
       return(url)
 
@@ -660,6 +668,8 @@ def save_picture(url, j_name):
 
       # get content
       img = http_req.content
+
+      print("getting file: %s from web server" %(url))
      
       # write content to SD
       file_name = '/sd/cover/' + j_name + '.jpg'
@@ -667,6 +677,9 @@ def save_picture(url, j_name):
       fd.write(img)
       fd.close()
       print("wrote content to file", file_name)
+
+      # image will be displayed directy from file system
+
 
       ##############
       # IF /sd/cover/0_libe_L.jpg does not exist
@@ -881,14 +894,17 @@ def rotate_on_orientation(cover, text=False):
     rot = 1
   
   if cover in ["china_daily"]:
-    # WTF, rot 3 crashed S3. rot 0,1,2 are ok, incl with china_daily_L.jpg
+    # WTF, rot 3 crashed S3 (with all covers). rot 0,1,2 are ok, incl with china_daily_L.jpg
     # rot 5 ok but pic mirrored
     # rot 4, 6 works as well but croppêd and mirrored
     # ret 7 crashed again
+    # The rot 3 problem is the same with files in /flash, or bitmap (1) files
+    ##### HOURRA. do not ask me why, only showing image 959x539 fixed the problem
     if text:
       rot = 3  # rot 3 OK for print
     else:
-      rot = 5 # vague workaround. will still show a mirrored pic
+      #rot = 5 # vague workaround. will still show a mirrored pic
+      rot = 3 #  959x539
 
   if cover in ["newyorker"]:
     rot = 0
@@ -998,7 +1014,16 @@ def show_cover(cover, file_name, unattended = True):
 
   print("draw jpeg file. unattended: %s" %unattended)
   ######### use Display. vs M5.Lcd.
-  Display.drawJpg(file_name, 0, 0, 0, 0, 0, 0, 1, 1)
+
+  #### bug with rot 3. seems to be fixed by only displaying 959 x 539
+  #Display.drawJpg(file_name, 0, 0, 0, 0, 0, 0, 1, 1)
+  # https://uiflow-micropython.readthedocs.io/en/2.2.0/hardware/display.html
+  
+  if cover in ["china_daily"]:
+    Display.drawJpg(file_name, 0, 0, 959, 539)
+  else:
+    Display.drawJpg(file_name, 0, 0, 0, 0)
+
 
   # used in powerdown to write msg (date, sleeping time)
   # because in interactive mode, the pic being displayed is not based on accelerometer, but on user interaction
