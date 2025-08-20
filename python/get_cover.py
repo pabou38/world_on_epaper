@@ -5,6 +5,10 @@
 # keep v1 app big.py for NTY on 7.5 inch 800x480 display
 ##############################
 
+# to test if web server is running
+# http://192.168.1.206:5500/status
+# {"L":"version: 1.16","ok":true}
+
 # https://pillow.readthedocs.io/en/stable/reference/Image.html
 
 # https://pillow.readthedocs.io/en/stable/handbook/concepts.html#modes
@@ -56,6 +60,7 @@ version = 1.12 # 28 july  rotate nyt
 version = 1.13 # 9 aout. python env use #!
 version = 1.14 # 11 aout. add china daily
 version = 1.15 # 15 aout. add caption for china daily
+version = 1.16 # 20 aout. save 1 (bitmap)
 
 # pip install beautifulsoup4    Successfully installed beautifulsoup4-4.13.4
 # sudo apt install python3-bs4  # on PI  python3-bs4 (4.9.3-1) older version. pip install in venv
@@ -70,7 +75,6 @@ WTF: pip install pdf2image fails because pip install pillow fails because missin
 https://pillow.readthedocs.io/en/latest/installation/building-from-source.html#building-from-source
 https://techoverflow.net/2022/04/16/how-to-fix-python-pillow-pip-install-exception-requireddependencyexception-jpeg/
 sudo apt install libjpeg-dev (libjpeg8-dev does not work)
-
 
 bs4 already apt installed BUT cannot import in venv
 pip install bs4  # installed beautifulsoup4-4.13.4 
@@ -158,6 +162,7 @@ newyorker_epaper_L = "newyorker_epaper_L.jpg"
 
 china_daily_jpeg = "china_daily_org.jpg"
 china_daily_epaper_L = "china_daily_epaper_L.jpg"
+china_daily_epaper_1 = "china_daily_epaper_1.jpg"
 
 
 ######################
@@ -176,11 +181,23 @@ for d in [libe_dir, nyt_dir, newyorker_dir, china_daily_dir]:
         pass
 
 
-# use to format URL on content in web server
-own_ip = my_utils.get_own_ip("wlan0")
-
+###############
+# logging
+###############
 logger = my_log.get_log(log_file="get_cover.log", root=".", name = "get_cover")
-logger.info("get cover version %0.2f starting" %version)
+
+logger.info("STARTING: get cover version %0.2f" %version)
+
+
+# use to format URL of content in web server
+
+own_ip = my_utils.get_own_ip(interface="eth0")
+if own_ip == None:
+    s = "cannot get own IP"
+    print(s)
+    logger.error(s)
+    own_ip = "192.168.1.206"
+
 
 ##################
 # liberation
@@ -874,22 +891,32 @@ def get_china_daily():
                    
 
                     ################
-                    # convert
+                    # convert to L and save with prefix
                     ################
 
-                    im1 = im1.convert('L')
-                    print(im1.mode, im1.size, im1.getbands() ) # L (540, 960) ('L',)
-
-
-
-
-                    ##############
-                    # save with prefix
-                    #############
+                    im2 = im1.convert('L')
+                    print(im2.mode, im2.size, im2.getbands() ) # L (540, 960) ('L',)
 
                     f = "%d_%s" %(i,china_daily_epaper_L)
-                    im1.save(f)
+                    im2.save(f)
                     print("saving: %s" %f)
+
+                
+
+                    ################
+                    # convert to 1 and save with prefix
+                    ################
+
+                    # RGB , 3 bytes
+                    # P: palette  (eg one byte is an index in one color in 256)
+                    # L: single channel, interpreted as grayscale (Luminance, ie brigthness from black to white)
+                    im2 = im1.convert('1')
+                    print(im2.mode, im2.size, im2.mode) #1 (540, 960)
+
+                    f = "%d_%s" %(i,china_daily_epaper_1)
+                    im2.save(f)
+                    print("saving: %s" %f)
+
 
                     nb_image = nb_image + 1
 
@@ -1009,6 +1036,8 @@ if __name__ == "__main__":
 
     @app.route("/china_daily", methods=['GET', 'POST']) 
     def flask_china_daily():
+
+        ## create 1 (bitmap) as well and copy to web server
            
         ret = get_china_daily()
 
@@ -1030,12 +1059,19 @@ if __name__ == "__main__":
                 # *_epaper_L need to be prefixed with 0_ to get latest
                 p = "%d_%s" %(i, china_daily_epaper_L )
                 copyfile(p, os.path.join(web_root, china_daily_dir, p))
+
+            # copy all 1 file to web server
+            for i in range(nb_image):
+                # *_epaper_L need to be prefixed with 0_ to get latest
+                p = "%d_%s" %(i, china_daily_epaper_1 )
+                copyfile(p, os.path.join(web_root, china_daily_dir, p))
            
             # return url to access
             url_china_daily_root = "http://"+own_ip +  ":%d" %web_port +"/"+ china_daily_dir+ "/"
 
             # returns an actual filename, ie with 0_ so that it can be used as it 
-            d= {"ok": True, "org":url_china_daily_root+ china_daily_jpeg, "L": url_china_daily_root + "0_%s" %china_daily_epaper_L, "nb": nb_image}
+            d= {"ok": True, "org":url_china_daily_root+ china_daily_jpeg, "L": url_china_daily_root + "0_%s" %china_daily_epaper_L, "nb": nb_image,
+                "1": url_china_daily_root + "0_%s" %china_daily_epaper_1}
             print(d)
             logger.info(str(d))
             return(d)
@@ -1048,7 +1084,9 @@ if __name__ == "__main__":
         d= {"ok": True, "L": "version: %0.2f" %version}
         print(d)
         return(d)
+    
 
+    
     print("\n====> waiting for requests on port: %d" %flask_port)
 
     my_web_server.start_flask(app, port = flask_port)
