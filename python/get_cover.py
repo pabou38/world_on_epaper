@@ -60,7 +60,11 @@ version = 1.12 # 28 july  rotate nyt
 version = 1.13 # 9 aout. python env use #!
 version = 1.14 # 11 aout. add china daily
 version = 1.15 # 15 aout. add caption for china daily
+version = 1.16 # 20 aout. save 1 (bitmap)version = 1.16 # 20 aout. save 1 (bitmap)
 version = 1.16 # 20 aout. save 1 (bitmap)
+version = 1.17 # 6 sept. return local/nat port vs local url for content.
+version = 1.18 # 9 sept. return local/nat port in status
+
 
 # pip install beautifulsoup4    Successfully installed beautifulsoup4-4.13.4
 # sudo apt install python3-bs4  # on PI  python3-bs4 (4.9.3-1) older version. pip install in venv
@@ -121,9 +125,12 @@ import my_web_server
 import my_utils
 
 
-flask_port = 5500 # flask
-web_port = 81  # lighttpd
+flask_port = 5500 # flask LOCAL. used to start flask
+# NAT side need to be configured in router's NAT and known to client (ie paperS3 micropython)
 
+
+web_port_local = 81  # lighttpd LOCAL
+web_port_NAT = 81 # WAN side of NAT
 
 ################
 # M5stack papserS3
@@ -962,15 +969,21 @@ if __name__ == "__main__":
             copyfile(libe_epaper_1, os.path.join(web_root, libe_dir, libe_epaper_1))
 
             # return url to access
-            url_libe_root = "http://"+ own_ip + ":%d" %web_port + "/"+ libe_dir + "/"
+            #url_libe_root = "http://"+ own_ip + ":%d" %web_port_local + "/"+ libe_dir + "/"
+            #d = {"ok": True, "org":url_libe_root+libe_jpeg, "L": url_libe_root+libe_epaper_L, "1":url_libe_root+libe_epaper_1}
 
-            d = {"ok": True, "org":url_libe_root+libe_jpeg, "L": url_libe_root+libe_epaper_L, "1":url_libe_root+libe_epaper_1}
+            # do not return a local url, as this can be used remotely thru NAT
+            # instead return just port. local IP and DNS name need to be known on client 
+            prefix = "/" + libe_dir + "/"
+
+            d = {"ok": True, "local_port": web_port_local, "NAT_port": web_port_NAT, "org":prefix+libe_jpeg, "L": prefix+libe_epaper_L, "1":prefix+libe_epaper_1}
+
             print(d)
             logger.info(str(d))
             return(d)
         
-            # {"1":"http://192.168.1.221/libe/libe_epaper_1.jpg","L":"http://192.168.1.221/libe/libe_epaper_L.jpg","ok":true,"org":"http://192.168.1.221/libe/libe_org.jpg"}
-            # http://192.168.1.221/libe/libe_epaper_L.jpg
+            # {"1":"/libe/libe_epaper_1.jpg","L":"/libe/libe_epaper_L.jpg","NAT_port":81,"local_port":81,"ok":true,"org":"/libe/libe_org.jpg"}
+ 
 
 
     @app.route("/nyt", methods=['GET', 'POST']) 
@@ -991,13 +1004,17 @@ if __name__ == "__main__":
             copyfile(nytv2_epaper_L, os.path.join(web_root, nyt_dir, nytv2_epaper_L))
            
             # return url to access
-            url_nyt_root = "http://"+own_ip + ":%d" %web_port +"/"+nyt_dir+"/"
+            #url_nyt_root = "http://"+own_ip + ":%d" %web_port_local +"/"+nyt_dir+"/"
+            #d= {"ok": True, "org":url_nyt_root+nytv2_pdf, "L": url_nyt_root+nytv2_epaper_L}
 
-            d= {"ok": True, "org":url_nyt_root+nytv2_pdf, "L": url_nyt_root+nytv2_epaper_L}
+            prefix = "/" + nyt_dir + "/"
+
+            d = {"ok": True, "local_port": web_port_local, "NAT_port": web_port_NAT, "org":prefix+nytv2_pdf, "L": prefix+nytv2_epaper_L}
             print(d)
             logger.info(str(d))
             return(d)
-            # {"L":"http://192.168.1.221/nyt/nytv2_epaper_L.jpg","ok":true,"org":"http://192.168.1.221/nyt/nytv2_org.pdf"}
+           
+            #{"L":"/nyt/nytv2_epaper_L.jpg","NAT_port":81,"local_port":81,"ok":true,"org":"/nyt/nytv2_org.pdf"}
 
 
 
@@ -1024,15 +1041,20 @@ if __name__ == "__main__":
                 copyfile(p, os.path.join(web_root, newyorker_dir, p))
            
             # return url to access
-            url_newyorker_root = "http://"+own_ip +  ":%d" %web_port +"/"+ newyorker_dir+ "/"
+            #url_newyorker_root = "http://"+own_ip +  ":%d" %web_port_local +"/"+ newyorker_dir+ "/"
 
             # returns an actual filename, ie with 0_ so that it can be used as it 
-            d= {"ok": True, "org":url_newyorker_root+newyorker_jpeg, "L": url_newyorker_root+ "0_%s" %newyorker_epaper_L, "nb": nb_image}
+            #d= {"ok": True, "org":url_newyorker_root+newyorker_jpeg, "L": url_newyorker_root+ "0_%s" %newyorker_epaper_L, "nb": nb_image}
+
+            prefix = "/" + newyorker_dir + "/"
+
+            d = {"ok": True, "local_port": web_port_local, "NAT_port": web_port_NAT, "org":prefix+newyorker_jpeg, "L": prefix+ "0_%s" %newyorker_epaper_L, "nb":nb_image}
+
+            # {"L":"/newyorker/0_newyorker_epaper_L.jpg","NAT_port":81,"local_port":81,"nb":18,"ok":true,"org":"/newyorker/newyorker_org.jpg"}
             print(d)
             logger.info(str(d))
             return(d)
-            # {"L":"http://192.168.1.221/newyorker/newyorker_epaper_L.jpg","nb":18,"ok":true,"org":"http://192.168.1.221/newyorker/newyorker_org.jpg"}
-
+           
 
     @app.route("/china_daily", methods=['GET', 'POST']) 
     def flask_china_daily():
@@ -1067,21 +1089,25 @@ if __name__ == "__main__":
                 copyfile(p, os.path.join(web_root, china_daily_dir, p))
            
             # return url to access
-            url_china_daily_root = "http://"+own_ip +  ":%d" %web_port +"/"+ china_daily_dir+ "/"
+            #url_china_daily_root = "http://"+own_ip +  ":%d" %web_port_local +"/"+ china_daily_dir+ "/"
+
+            prefix = "/" + china_daily_dir + "/"
 
             # returns an actual filename, ie with 0_ so that it can be used as it 
-            d= {"ok": True, "org":url_china_daily_root+ china_daily_jpeg, "L": url_china_daily_root + "0_%s" %china_daily_epaper_L, "nb": nb_image,
-                "1": url_china_daily_root + "0_%s" %china_daily_epaper_1}
+            d= {"ok": True, "local_port": web_port_local, "NAT_port": web_port_NAT,  "org":prefix+ china_daily_jpeg, "L": prefix + "0_%s" %china_daily_epaper_L, "nb": nb_image,
+                "1": prefix + "0_%s" %china_daily_epaper_1}
+            
             print(d)
             logger.info(str(d))
             return(d)
-            # {'ok': True, 'org': 'http://192.168.1.207:81/china_daily/china_daily_org.jpg', 'L': 'http://192.168.1.207:81/china_daily/0_china_daily_epaper_L.jpg', 'nb': 4}
-
+            # {"1":"/china_daily/0_china_daily_epaper_1.jpg","L":"/china_daily/0_china_daily_epaper_L.jpg","NAT_port":81,"local_port":81,"nb":4,"ok":true,"org":"/china_daily/china_dai
+           
     @app.route("/status", methods=['GET']) 
     def flask_status():
 
         # use same structure as for scrapping, to reuse code on paperS3
-        d= {"ok": True, "L": "version: %0.2f" %version}
+	# client expect nat and local port
+        d= {"ok": True, "L": "version: %0.2f" %version, "NAT_port": web_port_NAT, "local_port": web_port_local}
         print(d)
         return(d)
     
