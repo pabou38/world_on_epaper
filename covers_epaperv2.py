@@ -8,6 +8,10 @@ from hardware import Timer
 import time
 import random
 
+import network
+
+from utility import print_error_msg
+
 # https://uiflow-micropython.readthedocs.io/en/2.2.0/hardware/display.html
 # A lcd display library
 from M5 import Display
@@ -45,18 +49,28 @@ version = 1.24 # 14/08/2025
 version = 1.25 # 16/08/2025 crash with rot = 3
 version = 1.26 # 17/08/2025 replace M5.Lcd by Display/Widgets
 version = 1.27 # 20/08/2025 found workaround for rot 3 crash
+version = 1.23 # 26/08/2025  /sd/epapers3-config.txt , 1st line is DNS name http://bla.org:port of PI if PI and paperS3 are not on same network (ssid) 
+   # "local" ssid,ie ssid on which the PI is connected, and local URL are defined in the code)
+version = 1.24 # 05/09/2025  timer unattended pops and disconnect from usb when loading to ram to test new version  
+version = 1.25 # 10/09/2025  PI and paperS3 can be on different network. see /sd/papers3-config.txt. json returns ports (local and nat) for web server
 
 ################
 # TO DO
 # newyorker and china daily can provide multiple picture in one go, to be leveraged
 ################
 
+# print when booting
+#[INFO] Syncing resources...
+#[INFO] WiFi connected!        MAKE SURE M5burner uses option 3, ie network setup
 
 print("version: %0.2f" %version)
 
-# UIFlow 2.0 V2.3.3
-print("python: ", sys.version_info)
-print("micropython: ", sys.implementation)
+# UIFlow 2.0 firmware V2.3.3
+# MicroPython v1.25.0-dirty on 2025-08-22; M5STACK PaperS3 with ESP32S3
+
+print("python: ", sys.version_info) # # python:  (3, 4, 0)
+print("micropython: ", sys.implementation) # micropython:  (name='micropython', version=(1, 25, 0, ''), _machine='M5STACK PaperS3 with ESP32S3', _mpy=11014, _build='M5STACK_PaperS3')
+
 
 """
 +------------------------+
@@ -118,8 +132,12 @@ prev_touchY = -2
 # 0_<>_L.jpg to 9_<>_L.jpg.  0 is most recent
 nb_kept = 10
 
-# raspberry PI
-scrap_url = 'http://192.168.1.206:5500/'
+# config file, contains DNS name for PI, if paperS3 and PI not on the same LAN
+config_file = "/sd/papers3-config.txt"
+
+# scrap url defined in setup, based on current ssid and config_file
+#scrap_url = 'http://192.168.1.206:5500/'
+scrap_url = None
 
 
 # scrapping endpoint on web server IP:5500/<endpoint>
@@ -150,11 +168,19 @@ poweroff_mesg = None # set before setting timer
 
 # poweroff for x sec, then wakeup and reboot
 # the longer, the less frequent update and the less battery
-poweroff_sleep_sec = 60*60 * 4
+poweroff_sleep_sec = 60*60 * 4  # 4h
 
+###############################
+# timer
+###############################
 # will reboot after x sec of inactivity
-timer_unattended = 30
-timer_interactive = 30
+# this seems to pop and disconnect USB ie interrupt loading of a new version onto RAM, when testing (and a version is already in flash with the timer)
+# does this also interupt writing main.py to flash ?
+# set to large value (in flash) to debug without fearing deconnection
+# or assert False before starting timer, to exit to REPL
+
+timer_unattended = 60
+timer_interactive = 60
 
 
 #############
@@ -283,7 +309,9 @@ def power_down(cause=None, sec = 60*60):
 
   global interactive # set to true whenwe interacted
 
-  s = "powerdown. cause:%s, sec: %d. current cover (being displayed) %s" %(cause, sec, current_cover)
+  global wifi_connected
+
+  s = "powerdown. cause:%s, will sleep sec: %d. current cover (being displayed) %s" %(cause, sec, current_cover)
   print(s)
   my_log(s)
 
@@ -351,7 +379,12 @@ def power_down(cause=None, sec = 60*60):
   # update footer widget before poweroff
   # msg contains time stamp. 
   # battery % already displayed on corner
-  display_msg = "%s power down for %dmn. Press button to restart immediatly"  %(time_stamp, int(sec /60))
+  if wifi_connected:
+    s = 'ok'
+  else:
+    s = 'fail'
+ 
+  display_msg = "%s down %dmn. wifi: %s Press button to restart"  %(time_stamp, int(sec /60), s)
   footer.setText(display_msg) # on top of existing pic
 
   """
@@ -599,17 +632,19 @@ def roll_cover(cover=None):
 ######################
 # scrap(): trigger PI to scrap a given cover.
 #####################
+# input: cover name
+# return tuple (file_path, local_port, NAT_port) , (None,None,None) on error
 
 # call endpoint on PI
-# PI does scrapping, return url of file (jpg, ..) as stored on PI's web server
-# return url of jpeg file on web server or 0
+# PI does scrapping, return file path in web server (eg /libe/libe_epaper_L.jpg) as stored on PI's web server, and local/remote ports
+# NOTE: there is a "special" endpoint/cover "status", to check if web server is online, before sending too many request to a dead server
 
-### "special" endpoint/cover "status", to check if web server is online
-
-# CALLED by get_covers()
+# CALLED by get_covers() , (called at start wit status endpoint)
 
 def scrap(cover): 
-  
+
+  global scrap_url # set in setup, can be local (192.xxx) or remote (ie DNS name)
+
   assert cover in cover_list + ["status"]
 
   scrap = scrap_url + cover
@@ -619,28 +654,45 @@ def scrap(cover):
     http_req = requests2.get(scrap, headers={'Content-Type': 'application/json'})
 
   except Exception as e:
+
     if cover == "status":
-      print("%s exception: %s" %(scrap, str(e)))
+      print("url:%s exception: %s" %(scrap, str(e)))
     else:
-      print_error("%s exception: %s" %(scrap, str(e)))
-    return(0)
+      print_error("url:%s exception: %s" %(scrap, str(e)))
+
+    return(None,None,None)
 
 
   if (http_req.status_code) == 200:
+
+    # check ok field in json
     ok = (http_req.json())['ok']
     if ok:
 
-      # GET L (grayscale)
-      url = (http_req.json())['L']
-      return(url)
+      try:
+
+        # GET L (grayscale) . this is a file path 
+        file_path = (http_req.json())['L']
+        local_port = http_req.json()['local_port']
+        NAT_port = http_req.json()['NAT_port']
+
+        return(file_path, local_port, NAT_port)  # implies ok is True
+
+      except:
+        # json not as expected
+        print_error("error scrapping. cannot decode json for url: %s" %scrap)
+        return (None,None,None)
+
 
     else:
-      print_error("error scrapping. json not ok: %s" %scrap)
-      return (0)
+      # ok field was set to False by PI
+      print_error("error scrapping. json ok field is False for url: %s" %scrap)
+      return (None,None, None)
 
   else:
-    print_error("error scrapping. http status not 200: %s" %scrap)
-    return (0)
+    # http failed
+    print_error("error scrapping. http status not 200 for url: %s" %scrap)
+    return (None, None, None)
 
 
 ###################################
@@ -653,7 +705,7 @@ def scrap(cover):
 
 # CALLED by get_covers()
 
-def save_picture(url, j_name):
+def get_and_save_picture(url, j_name):
   
   #print("getting file: %s from PI and store locally as jpeg: %s" %(url, j_name))
 
@@ -718,8 +770,7 @@ def save_picture(url, j_name):
 #######################
 # get_covers(): scrap and save picture on SD
 #######################
-
-# helper, call scrap() and save_picture()
+# call scrap() and get_and_save_picture()
 
 # files are in /sd/cover/<>_L.jpg
 # () get all
@@ -727,6 +778,9 @@ def save_picture(url, j_name):
 
 
 def get_covers(c=None):
+
+  global is_local # set in setup
+  global pi_name # set in setup
   
   if c is None:
     cover_l = cover_list  # get all covers
@@ -734,7 +788,7 @@ def get_covers(c=None):
     assert c in cover_list
     cover_l = [c] # get one
 
-  print("get_cover: %s" %str(cover_l))
+  print("get_cover for: %s" %str(cover_l))
 
   for cover in cover_l: # end point on web server. file stored on SD as cover_L
 
@@ -747,24 +801,44 @@ def get_covers(c=None):
     c = c[:20]
     Display.printf(c)
 
-    # PI4 will scrap, store on webserver, and return url
+    # PI4 will scrap, store on webserver, and return file path and ports
     try:
-      url = scrap(cover)
-      print("scrap return url: %s" %url)
+      print("call PI for:", cover)
+
+      ##################
+      # SCRAP
+      ##################
+      file_path, local_port, NAT_port = scrap(cover)
+      print("scrap return file path: %s. local port:%d, nat port:%s" %(file_path, local_port, NAT_port))
 
     except Exception as e:
       print("calling scrap: Exception %s" %str(e))
-      url = 0
+      file_path = None
 
-    if url != 0: 
+
+    if file_path is not None: 
 
       tone(1500,150)  # scrap OK
 
-      # save to SD. filename is <cover>_L.jpg
-      jpeg_name =  "%s_L" %cover 
-      print("getting: %s from web server and saving to SD as: %s" %(url, jpeg_name))
+      # get file from web server, and save it to SD. filename is <cover>_L.jpg
+      jpeg_name =  "%s_L" %cover # in sd
 
-      ret = save_picture(url, jpeg_name)
+      # build url
+      # pi_name : port (from json, depend on is_local) file_path (from json)
+
+      if is_local:
+        port = local_port
+      else:
+        port = NAT_port
+
+      url = "%s:%d%s" %(pi_name, port, file_path)
+
+      print("getting url: %s from web server and saving to SD as: %s" %(url, jpeg_name))
+
+      ######################
+      # GET AND SAVE
+      ######################
+      ret = get_and_save_picture(url, jpeg_name)
 
       if not ret:
         print("cannot save file" , jpeg_name, url)
@@ -928,8 +1002,9 @@ def rotate_on_orientation(cover, text=False):
 ####################
 # Display.drawJpg("/sd/cover/libe_L.jpg", 0, 0)
 # Display.drawPng
-# Display.drawImage
 # Display.drawBmp
+
+# Display.drawImage seems to accept all 3 types above
 
 # set global current_cover
 
@@ -956,7 +1031,7 @@ def show_cover(cover, file_name, unattended = True):
   assert cover in cover_list
 
   # unattended, ie done a boot time
-  print("show cover: cover:%s, %s. unattended: %s" %(cover, file_name, unattended))
+  print("show cover: cover: %s, filename: %s. unattended: %s" %(cover, file_name, unattended))
 
   """
   # https://uiflow-micropython.readthedocs.io/en/latest/hardware/display.html
@@ -1079,12 +1154,25 @@ def setup():
 
   global rtc
 
-  global interactive
+  global scrap_url
 
-  interactive = False # set to true whe we interact
+  global interactive
+  interactive = False # set to true when we interact
+
+  global is_local
+  is_local = None # set below depending on ssid
+
+  global pi_name
+  pi_name = None # set below
+
+  global wifi_connected
+  wifi_connected = None
+
 
   M5.begin()
 
+  # to have wifi started with credential configured in M5burner, use option 3 (neywork setup)
+  # option 1 (run main.py directly) does not start wifi
 
   ##################
   # RTC
@@ -1094,14 +1182,136 @@ def setup():
   print(ret)
   # (2025, 8, 15, 5, 6, 55, 6, 251388)
   # 15 aug, friday, 8h 55
-  print(rtc.timezone()) # GMT0
+  print("rtc timezone:", rtc.timezone()) # GMT0
+
+
 
   ################
   # SD card
   ###############
   sdcard.SDCard(slot=3, width=1, sck=39, miso=40, mosi=38, cs=47, freq=1000000)
 
-  print("booting. SD: ", list(os.listdir("/sd/cover")))
+  # [Errno 22] EINVAL ???
+
+  print("booting. /sd/cover: ", list(os.listdir("/sd/cover")))
+
+
+  ###################
+  # get scrap url based on ssid and config file (on /sd)
+  ###################
+  # set PI's url based on ssid
+  # set is_local bool
+  # https://uiflow-micropython.readthedocs.io/en/master/system/wlan.sta.html
+
+  #>>> os.listdir("/sd")
+  #['System Volume Information', 'cover', 'PS1 Startup.wav', 'nytv2_org.pdf', 'epaper.log', 'papers3-config.txt']
+
+  print("getting wifi information")
+  wlan = network.WLAN(network.STA_IF)
+  #print(wlan)
+  print("wifi status:", wlan.status()) # 1010
+  # network.STAT_IDLE 1000
+  # network.STAT_CONNECTING 1001
+  # network.STAT_WRONG_PASSWORD 202
+  # network.STAT_NO_AP_FOUND 201
+  # network.STAT_CONNECT_FAIL 203
+  # network.STAT_GOT_IP  1010
+  
+  #
+  print("is wifi connected ?:", wlan.isconnected())
+  
+  if wlan.status() != network.STAT_GOT_IP:
+    wifi_connected = False
+    s = "WARNING. wifi not connected"
+    print_error_msg(s)
+    print(s)
+   
+  else:
+    wifi_connected = True
+
+    print("rssi", wlan.status("rssi"))
+    print("ifconfig", wlan.ifconfig())
+
+  
+  ssid =  wlan.config("ssid")   # configured with M5burner
+  print("ssid:", ssid)
+
+  local_url = 'http://192.168.1.206:5500/'
+
+  if ssid in ["Livebox-deec"]:
+    print("PI on the same network as paperS3")
+    # raspberry PI
+    scrap_url = local_url
+
+    is_local = True
+
+
+  else:
+    print("PI NOT on the same network as paperS3. reading %s" %config_file)
+    try:
+
+      ##################
+      # read url of remote PI server from config file
+      # I do no want this to be hardcoded
+      ##################
+      fd = open(config_file)
+      print("config file %s opened" %config_file)
+
+      try:
+        # url of PI is the first line in the file
+        scrap_url = fd.readline()
+        print("first line in config file:", scrap_url)
+        # 'http://bla.org:port\r\n'
+        if scrap_url[-2] == '\r': # file created on windows
+          scrap_url = scrap_url[:-2]
+        else:
+          scrap_url = scrap_url[:-1]
+        fd.close()
+
+        if scrap_url[-1] != "/": # if the user forgot to add last /, to be contenated with cover (ie "libe")
+          scrap_url = scrap_url + '/'
+
+        is_local = False
+
+      except Exception as e:
+        print("cannot read line from config file in: %s" %config_file)
+        scrap_url = local_url # default
+        is_local = True
+
+    except Exception as e:
+      print("cannot open config file in: %s" %config_file)
+      scrap_url = local_url # default
+      is_local = True
+
+
+  # url, including port of flask app
+  print("using scrap url (incl flask's app port) %s. local?: %s" % (scrap_url, is_local))
+
+
+  #####################
+  # get address by removing port
+  ####################
+  x = scrap_url.split(":")
+  print(x) # ['http', '//bla.org', 'xxxxx/']
+
+  pi_name = "%s:%s" %(x[0],x[1])
+
+  print("pi_name (local or remote), ie without port", pi_name)
+  # pi_name is http://192.168.1.X or http://bbbbb.og
+ 
+  # NOTE: port for web server (local or nat) AND path in web server are returned in the json when calling the scrapping endpoint (eg /libe)
+  # will be concatenated with pi_name to form url of content
+
+  # pi_name : port (from json, depend on is_local) file_path (from json)
+
+
+  ################
+  # debug
+  #################
+  # return to REPL
+  #assert False
+
+
 
   #############
   # log time stamp to file
@@ -1232,6 +1442,35 @@ def setup():
   
 
   """
+  # testing with internal image
+  # Display.Image works with jpg, png and bmp
+  
+  >>> Display.drawJpg("/flash/res/img/default.jpg")
+  >>> Display.drawJpg("/flash/res/img/default.jpg", 100, 100)
+  >>> Display.drawJpg("/flash/res/img/default.jpg", 0,0)
+  >>> Display.drawJpg("/flash/res/img/default.jpg")
+  >>> Display.drawJpg("/flash/res/img/uiflow.jpg")
+  >>> Display.drawImage("/flash/res/img/uiflow.jpg")
+  >>> Display.drawImage("/flash/res/img/uiflow.jpg",300,30)
+  >>> Display.drawBmp("/flash/res/img/uiflow.bmp",300,30)
+  >>> Display.drawPng("/flash/res/img/default.png",300,30)
+
+  # with file in SD  
+  >>> Display.drawImage("/sd/cover/libe_L.jpg")
+  >>> Display.drawImage("/sd/cover/newyorker_L.jpg", 0,0)
+
+  x, y Starting coordinates on the display screen.
+  maxW, maxH Width and height to be drawn. Draws the full image if ≤0.
+  offX, offY Offset in the image to start from.
+
+  PNG only ???? arg accepted by drawImage. remove need to size image to paperS3 dimension ??
+  scaleX, scaleY Whether to scale the image horizontally or vertically. 
+
+
+  """
+
+
+  """
   K5.Lcd.FONTS.ASCII7  very small
   K5.Lcd.FONTS.DejaVu9
   K5.Lcd.FONTS.DejaVu12
@@ -1269,22 +1508,28 @@ def setup():
 
 
   ##############
-  # check if web server online and update covers
+  # check if web server online and update all cccovers
   ##############
-  ret = scrap("status")
+
+
+  (f,_,_) = scrap("status")
+  # {"L":"version: 1.18","NAT_port":81,"local_port":81,"ok":true}
 
   M5.Lcd.setCursor(top_line[0], top_line[1])
 
-  if ret != 0:
+  if f is not None:
 
-    ##############
-    # get covers and roll
-    ##############
-    print("web server in online. getting updated covers", ret)
+    print("web server in online. getting updated covers", f)
     Display.printf('getting new covers')
 
     print("GETTING ALL COVERS")
     # write 2nd_top_line with name of cover being processed
+
+
+    ##############
+    # get ALL covers and roll
+    ##############
+
     get_covers() # get all
 
     print("ROLLING COVERS")
@@ -1331,7 +1576,7 @@ def setup():
     show_cover(cover, file_name, unattended=True)  
     # show_cover() updated current_cover global
     # show cover does rotation
-    print("current cover %s" %current_cover)
+    print("current cover: %s" %current_cover)
 
   except Exception as e:
     print("Exception %s cannot show cover at boot %s" %(str(e), file_name))
@@ -1527,3 +1772,7 @@ if __name__ == '__main__':
       print_error_msg(e)
     except ImportError:
       print("please update to latest firmware")
+
+
+
+

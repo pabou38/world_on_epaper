@@ -1,0 +1,9 @@
+http://bla.bla.org:1234
+
+
+# read by micropython app if curent wifi not recognized as a "local" wifi
+# file is expected as /sd/papers3-config.txt
+# file has only one active line, and this (1st) line is url of PI's scrapping endpoint (the WAN url, not the local one). 
+# this file can be created on windows and need to be transfered to paperS3's flash , eg using UIflow
+# port is for scrapping. The port for web server is returned in json
+
